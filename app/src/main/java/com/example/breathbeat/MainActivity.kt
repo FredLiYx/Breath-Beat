@@ -117,6 +117,15 @@ fun BreathBeatApp(
     lungCapacityRepository: LungCapacityRepository
 ) {
     var currentDestination by rememberSaveable { mutableStateOf(AppDestinations.HOME) }
+    var measuringDataSaved by rememberSaveable { mutableStateOf(false) }
+    val isBlowing by spirometerManager.isBlowing.collectAsState()
+
+    // Reset saved state when user starts blowing again, regardless of current screen
+    LaunchedEffect(isBlowing) {
+        if (isBlowing) {
+            measuringDataSaved = false
+        }
+    }
 
     NavigationSuiteScaffold(
         navigationSuiteItems = {
@@ -141,7 +150,12 @@ fun BreathBeatApp(
                     AppDestinations.HOME -> HomeScreen(healthManager, lungCapacityRepository) {
                         currentDestination = AppDestinations.HISTORY
                     }
-                    AppDestinations.MEASURING -> MeasuringScreen(spirometerManager, lungCapacityRepository)
+                    AppDestinations.MEASURING -> MeasuringScreen(
+                        spirometerManager = spirometerManager, 
+                        lungCapacityRepository = lungCapacityRepository,
+                        dataSaved = measuringDataSaved,
+                        onDataSavedChange = { measuringDataSaved = it }
+                    )
                     AppDestinations.PROFILE -> Greeting(name = "Profile")
                     AppDestinations.HISTORY -> HistoryScreen(lungCapacityRepository) {
                         currentDestination = AppDestinations.HOME
@@ -562,7 +576,12 @@ private fun drawLineSeries(
 
 @SuppressLint("MissingPermission")
 @Composable
-fun MeasuringScreen(spirometerManager: SpirometerManager, lungCapacityRepository: LungCapacityRepository) {
+fun MeasuringScreen(
+    spirometerManager: SpirometerManager, 
+    lungCapacityRepository: LungCapacityRepository,
+    dataSaved: Boolean,
+    onDataSavedChange: (Boolean) -> Unit
+) {
     val context = LocalContext.current
     val connectionState by spirometerManager.bluetoothConnectionManager.connectionState.collectAsState()
     val volumeML by spirometerManager.volumeML.collectAsState()
@@ -602,17 +621,22 @@ fun MeasuringScreen(spirometerManager: SpirometerManager, lungCapacityRepository
 
             Spacer(modifier = Modifier.height(16.dp))
             
-            // Save Data Button - Active only when user stopped blowing and there is data
+            // Save Data Button
             Button(
                 onClick = { 
                     scope.launch {
-                        lungCapacityRepository.insertRecord(volumeML)
-                        Log.d("MeasuringScreen", "Saved volume: $volumeML")
+                        try {
+                            lungCapacityRepository.insertRecord(volumeML)
+                            onDataSavedChange(true)
+                            Log.d("MeasuringScreen", "Saved volume: $volumeML")
+                        } catch (e: Exception) {
+                            Log.e("MeasuringScreen", "Error saving data", e)
+                        }
                     }
                 },
-                enabled = !isBlowing && volumeML > 0
+                enabled = !isBlowing && volumeML > 0 && !dataSaved
             ) {
-                Text("Save Data")
+                Text(if (dataSaved) "Data Saved" else "Save Data")
             }
 
             Spacer(modifier = Modifier.height(16.dp))
