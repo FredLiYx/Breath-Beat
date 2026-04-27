@@ -25,7 +25,7 @@ class HealthConnectActivity : ComponentActivity() {
                         style = MaterialTheme.typography.headlineMedium
                     )
                     Text(
-                        text = "This app requires access to your heart rate and blood oxygen data to provide personalized breathing analysis and health monitoring.",
+                        text = "This app requires access to your heart rate and SpO2 data to provide personalized breathing analysis and health monitoring.",
                         modifier = Modifier.padding(top = 8.dp)
                     )
                 }

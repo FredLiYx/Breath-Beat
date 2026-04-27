@@ -13,8 +13,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -62,6 +71,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.drawText
@@ -125,16 +135,18 @@ fun BreathBeatApp(
     var measuringDataSaved by rememberSaveable { mutableStateOf(false) }
     val isBlowing by spirometerManager.isBlowing.collectAsState()
 
-    // Reset saved state when user starts blowing again, regardless of current screen
+    // Reset saved state when user starts blowing again
     LaunchedEffect(isBlowing) {
         if (isBlowing) {
             measuringDataSaved = false
         }
     }
 
+    val destinations = remember { AppDestinations.entries.filter { it != AppDestinations.HISTORY } }
+    
     NavigationSuiteScaffold(
         navigationSuiteItems = {
-            AppDestinations.entries.filter { it != AppDestinations.HISTORY }.forEach {
+            destinations.forEach {
                 item(
                     icon = {
                         Icon(
@@ -150,21 +162,85 @@ fun BreathBeatApp(
             }
         }
     ) {
-        Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-            Column(modifier = Modifier.padding(innerPadding)) {
-                when (currentDestination) {
-                    AppDestinations.HOME -> HomeScreen(healthManager, lungCapacityRepository) {
-                        currentDestination = AppDestinations.HISTORY
-                    }
-                    AppDestinations.MEASURING -> MeasuringScreen(
-                        spirometerManager = spirometerManager, 
-                        lungCapacityRepository = lungCapacityRepository,
-                        dataSaved = measuringDataSaved,
-                        onDataSavedChange = { measuringDataSaved = it }
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            bottomBar = {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Breath&Beat Alpha 0.0.1",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                     )
-                    AppDestinations.MY_PLAN -> MyPlanScreen(healthManager, lungCapacityRepository)
-                    AppDestinations.HISTORY -> HistoryScreen(lungCapacityRepository) {
-                        currentDestination = AppDestinations.HOME
+                }
+            }
+        ) { innerPadding ->
+            var totalDrag by remember { mutableFloatStateOf(0f) }
+            
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .pointerInput(currentDestination) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { totalDrag = 0f },
+                            onHorizontalDrag = { change, dragAmount ->
+                                totalDrag += dragAmount
+                                val currentIndex = destinations.indexOf(currentDestination)
+                                
+                                if (currentIndex != -1) {
+                                    if (totalDrag > 150) { // Swipe Right -> Go Previous
+                                        if (currentIndex > 0) {
+                                            currentDestination = destinations[currentIndex - 1]
+                                            change.consume()
+                                            totalDrag = -10000f // Stop further detection for this gesture
+                                        }
+                                    } else if (totalDrag < -150) { // Swipe Left -> Go Next
+                                        if (currentIndex < destinations.size - 1) {
+                                            currentDestination = destinations[currentIndex + 1]
+                                            change.consume()
+                                            totalDrag = 10000f // Stop further detection
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
+            ) {
+                AnimatedContent(
+                    targetState = currentDestination,
+                    transitionSpec = {
+                        val fromIndex = destinations.indexOf(initialState)
+                        val toIndex = destinations.indexOf(targetState)
+                        
+                        if (fromIndex == -1 || toIndex == -1) {
+                            fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+                        } else if (toIndex > fromIndex) {
+                            (slideInHorizontally(animationSpec = tween(300)) { width -> width } + fadeIn()).togetherWith(
+                             slideOutHorizontally(animationSpec = tween(300)) { width -> -width } + fadeOut())
+                        } else {
+                            (slideInHorizontally(animationSpec = tween(300)) { width -> -width } + fadeIn()).togetherWith(
+                             slideOutHorizontally(animationSpec = tween(300)) { width -> width } + fadeOut())
+                        }
+                    },
+                    label = "ScreenTransition"
+                ) { targetScreen ->
+                    when (targetScreen) {
+                        AppDestinations.HOME -> HomeScreen(healthManager, lungCapacityRepository) {
+                            currentDestination = AppDestinations.HISTORY
+                        }
+                        AppDestinations.MEASURING -> MeasuringScreen(
+                            spirometerManager = spirometerManager, 
+                            lungCapacityRepository = lungCapacityRepository,
+                            dataSaved = measuringDataSaved,
+                            onDataSavedChange = { measuringDataSaved = it }
+                        )
+                        AppDestinations.MY_PLAN -> MyPlanScreen(healthManager, lungCapacityRepository)
+                        AppDestinations.HISTORY -> HistoryScreen(lungCapacityRepository) {
+                            currentDestination = AppDestinations.HOME
+                        }
                     }
                 }
             }
@@ -333,6 +409,8 @@ fun HomeScreen(
                 unit = "%"
             )
         }
+        
+        Spacer(modifier = Modifier.height(40.dp)) // Extra space for the alpha text
     }
 }
 
@@ -414,7 +492,7 @@ fun HistoryScreen(lungCapacityRepository: LungCapacityRepository, onBack: () -> 
                     Text("No records found")
                 }
             } else {
-                LazyColumn {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
                     groupedRecords.forEach { (month, monthRecords) ->
                         item {
                             var expanded by remember { mutableStateOf(false) }
@@ -464,6 +542,9 @@ fun HistoryScreen(lungCapacityRepository: LungCapacityRepository, onBack: () -> 
                                 }
                             }
                         }
+                    }
+                    item {
+                        Spacer(modifier = Modifier.height(40.dp))
                     }
                 }
             }
@@ -671,6 +752,8 @@ fun MeasuringScreen(
                     }
                 }
             }
+            
+            Spacer(modifier = Modifier.height(40.dp))
         }
     }
 }
@@ -754,6 +837,8 @@ fun MyPlanScreen(healthManager: HealthManager, lungCapacityRepository: LungCapac
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        
+        Spacer(modifier = Modifier.height(40.dp))
     }
 }
 
