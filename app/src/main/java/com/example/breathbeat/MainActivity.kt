@@ -13,7 +13,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -21,10 +24,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +49,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
@@ -51,6 +63,7 @@ import com.example.breathbeat.bluetooth.BluetoothConnectionManagerImpl
 import com.example.breathbeat.bluetooth.BluetoothConnectionState
 import com.example.breathbeat.health.HealthManager
 import com.example.breathbeat.health.HealthManagerImpl
+import com.example.breathbeat.health.MonthlyStats
 import com.example.breathbeat.spirometer.SpirometerManager
 import com.example.breathbeat.ui.theme.BreathBeatTheme
 import java.time.Instant
@@ -113,7 +126,15 @@ fun BreathBeatApp(spirometerManager: SpirometerManager, healthManager: HealthMan
 fun HomeScreen(healthManager: HealthManager) {
     val context = LocalContext.current
     var avgHeartRate by remember { mutableStateOf<Long?>(null) }
+    var minHeartRate by remember { mutableStateOf<Long?>(null) }
+    var maxHeartRate by remember { mutableStateOf<Long?>(null) }
+    
     var avgOxygen by remember { mutableStateOf<Double?>(null) }
+    var minOxygen by remember { mutableStateOf<Double?>(null) }
+    var maxOxygen by remember { mutableStateOf<Double?>(null) }
+
+    var yearlyHeartRateStats by remember { mutableStateOf<List<MonthlyStats>>(emptyList()) }
+    var yearlyOxygenStats by remember { mutableStateOf<List<MonthlyStats>>(emptyList()) }
 
     var hasHealthPermissions by remember { mutableStateOf(false) }
     var healthAvailability by remember { mutableStateOf(HealthConnectClient.SDK_UNAVAILABLE) }
@@ -121,18 +142,13 @@ fun HomeScreen(healthManager: HealthManager) {
     val healthPermissionLauncher = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { granted ->
-        Log.d("BreathBeat", "Health permissions granted: $granted")
         hasHealthPermissions = granted.containsAll(healthManager.getPermissionRequestIntent())
     }
 
     LaunchedEffect(Unit) {
-        val status = HealthConnectClient.getSdkStatus(context)
-        Log.d("BreathBeat", "Health Connect SDK status: $status")
-        healthAvailability = status
-        
-        if (status == HealthConnectClient.SDK_AVAILABLE) {
+        healthAvailability = HealthConnectClient.getSdkStatus(context)
+        if (healthAvailability == HealthConnectClient.SDK_AVAILABLE) {
             hasHealthPermissions = healthManager.hasAllPermissions()
-            Log.d("BreathBeat", "Has Health permissions: $hasHealthPermissions")
         }
     }
 
@@ -142,7 +158,17 @@ fun HomeScreen(healthManager: HealthManager) {
                 val endTime = Instant.now()
                 val startTime = endTime.minus(7, ChronoUnit.DAYS)
                 avgHeartRate = healthManager.getAverageHeartRate(startTime, endTime)
+                val (minHR, maxHR) = healthManager.getMinMaxHeartRate(startTime, endTime)
+                minHeartRate = minHR
+                maxHeartRate = maxHR
+
                 avgOxygen = healthManager.getAverageOxygenSaturation(startTime, endTime)
+                val (minO2, maxO2) = healthManager.getMinMaxOxygenSaturation(startTime, endTime)
+                minOxygen = minO2
+                maxOxygen = maxO2
+
+                yearlyHeartRateStats = healthManager.getYearlyHeartRateStats()
+                yearlyOxygenStats = healthManager.getYearlyOxygenStats()
             } catch (e: Exception) {
                 Log.e("BreathBeat", "Error fetching health data", e)
             }
@@ -150,58 +176,229 @@ fun HomeScreen(healthManager: HealthManager) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(text = "Health Overview", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
 
-        // Health Section
-        Text(text = "Past Week Average (Health Connect)", style = MaterialTheme.typography.titleMedium)
-        
-        when (healthAvailability) {
-            HealthConnectClient.SDK_AVAILABLE -> {
-                if (!hasHealthPermissions) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Button(onClick = {
-                        val permissions = healthManager.getPermissionRequestIntent()
-                        Log.d("BreathBeat", "Requesting Health permissions: $permissions")
-                        healthPermissionLauncher.launch(permissions)
-                    }) {
-                        Text("Authorize Health Connect")
+        if (healthAvailability == HealthConnectClient.SDK_AVAILABLE) {
+            if (!hasHealthPermissions) {
+                Button(onClick = {
+                    healthPermissionLauncher.launch(healthManager.getPermissionRequestIntent())
+                }) {
+                    Text("Authorize Health Connect")
+                }
+            } else {
+                Text(text = "Past Week Summary", style = MaterialTheme.typography.titleMedium)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                HealthMetricCard(
+                    title = "Heart Rate",
+                    unit = "BPM",
+                    avgValue = avgHeartRate?.toString() ?: "--",
+                    minValue = minHeartRate?.toString() ?: "--",
+                    maxValue = maxHeartRate?.toString() ?: "--",
+                    color = MaterialTheme.colorScheme.primary
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                HealthMetricCard(
+                    title = "Blood Oxygen",
+                    unit = "%",
+                    avgValue = avgOxygen?.let { "%.1f".format(it) } ?: "--",
+                    minValue = minOxygen?.let { "%.1f".format(it) } ?: "--",
+                    maxValue = maxOxygen?.let { "%.1f".format(it) } ?: "--",
+                    color = MaterialTheme.colorScheme.secondary
+                )
+
+                Spacer(modifier = Modifier.height(32.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(24.dp))
+                
+                Text(text = "Yearly Trends", style = MaterialTheme.typography.titleMedium)
+                Spacer(modifier = Modifier.height(16.dp))
+
+                MonthlyLineChart(
+                    title = "Heart Rate Trends (Yearly)",
+                    stats = yearlyHeartRateStats,
+                    color = MaterialTheme.colorScheme.primary,
+                    unit = "BPM"
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                MonthlyLineChart(
+                    title = "Blood Oxygen Trends (Yearly)",
+                    stats = yearlyOxygenStats,
+                    color = MaterialTheme.colorScheme.secondary,
+                    unit = "%"
+                )
+            }
+        } else {
+            Text("Health Connect is unavailable.")
+        }
+    }
+}
+
+@Composable
+fun HealthMetricCard(
+    title: String,
+    unit: String,
+    avgValue: String,
+    minValue: String,
+    maxValue: String,
+    color: Color
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = title, style = MaterialTheme.typography.titleSmall)
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Column {
+                    Text(text = "Average", style = MaterialTheme.typography.labelMedium)
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(
+                            text = avgValue,
+                            style = MaterialTheme.typography.headlineLarge,
+                            color = color
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(text = unit, style = MaterialTheme.typography.labelSmall)
                     }
-                } else {
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceEvenly) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(text = "Heart Rate", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                text = avgHeartRate?.toString() ?: "--",
-                                style = MaterialTheme.typography.headlineLarge,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(text = "BPM", style = MaterialTheme.typography.labelMedium)
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(text = "Blood Oxygen", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                text = avgOxygen?.let { "%.1f".format(it) } ?: "--",
-                                style = MaterialTheme.typography.headlineLarge,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                            Text(text = "%", style = MaterialTheme.typography.labelMedium)
-                        }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(text = "Min", style = MaterialTheme.typography.labelSmall)
+                        Text(text = minValue, style = MaterialTheme.typography.titleMedium)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(text = "Max", style = MaterialTheme.typography.labelSmall)
+                        Text(text = maxValue, style = MaterialTheme.typography.titleMedium)
                     }
                 }
             }
-            HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED -> {
-                Text("Health Connect update required.")
+        }
+    }
+}
+
+@Composable
+fun MonthlyLineChart(
+    title: String,
+    stats: List<MonthlyStats>,
+    color: Color,
+    unit: String
+) {
+    var showAvg by remember { mutableStateOf(true) }
+    var showMin by remember { mutableStateOf(true) }
+    var showMax by remember { mutableStateOf(true) }
+
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(text = title, style = MaterialTheme.typography.titleSmall)
+            
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = showAvg,
+                    onClick = { showAvg = !showAvg },
+                    label = { Text("Avg", style = MaterialTheme.typography.labelSmall) }
+                )
+                FilterChip(
+                    selected = showMin,
+                    onClick = { showMin = !showMin },
+                    label = { Text("Min", style = MaterialTheme.typography.labelSmall) }
+                )
+                FilterChip(
+                    selected = showMax,
+                    onClick = { showMax = !showMax },
+                    label = { Text("Max", style = MaterialTheme.typography.labelSmall) }
+                )
             }
-            else -> {
-                Text("Health Connect is not available on this device.")
+
+            if (stats.isNotEmpty()) {
+                val allValues = stats.flatMap { listOfNotNull(it.avg, it.min, it.max) }
+                val minY = (allValues.minOrNull() ?: 0.0) * 0.9
+                val maxY = (allValues.maxOrNull() ?: 100.0) * 1.1
+                val rangeY = maxY - minY
+
+                Box(modifier = Modifier.height(150.dp).fillMaxWidth().padding(top = 16.dp)) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val width = size.width
+                        val height = size.height
+                        val stepX = width / (stats.size - 1)
+
+                        fun getX(index: Int) = index * stepX
+                        fun getY(value: Double) = height - ((value - minY) / rangeY * height).toFloat()
+
+                        if (showAvg) drawLineSeries(stats.map { it.avg }, color, this, ::getX, ::getY)
+                        if (showMin) drawLineSeries(stats.map { it.min }, color.copy(alpha = 0.4f), this, ::getX, ::getY)
+                        if (showMax) drawLineSeries(stats.map { it.max }, color.copy(alpha = 0.7f), this, ::getX, ::getY)
+                    }
+                }
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    stats.forEachIndexed { index, stat ->
+                        if (index % 2 == 0 || index == stats.size - 1) {
+                            Text(stat.monthName, style = MaterialTheme.typography.labelSmall)
+                        } else {
+                            Spacer(modifier = Modifier.width(1.dp))
+                        }
+                    }
+                }
+            } else {
+                Box(modifier = Modifier.height(150.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("No data available", style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
+}
+
+private fun drawLineSeries(
+    data: List<Double?>,
+    color: Color,
+    drawScope: androidx.compose.ui.graphics.drawscope.DrawScope,
+    getX: (Int) -> Float,
+    getY: (Double) -> Float
+) {
+    val path = Path()
+    var firstPoint = true
+    
+    data.forEachIndexed { index, value ->
+        if (value != null) {
+            val x = getX(index)
+            val y = getY(value)
+            if (firstPoint) {
+                path.moveTo(x, y)
+                firstPoint = false
+            } else {
+                path.lineTo(x, y)
+            }
+            drawScope.drawCircle(color = color, radius = 4f, center = Offset(x, y))
+        }
+    }
+    
+    drawScope.drawPath(
+        path = path,
+        color = color,
+        style = Stroke(width = 4f)
+    )
 }
 
 @SuppressLint("MissingPermission")

@@ -9,6 +9,9 @@ import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.TextStyle
+import java.util.Locale
 
 class HealthManagerImpl(private val context: Context) : HealthManager {
 
@@ -58,12 +61,64 @@ class HealthManagerImpl(private val context: Context) : HealthManager {
         return response[HeartRateRecord.BPM_AVG]
     }
 
+    override suspend fun getMinMaxHeartRate(startTime: Instant, endTime: Instant): Pair<Long?, Long?> {
+        val response = healthConnectClient.aggregate(
+            AggregateRequest(
+                metrics = setOf(HeartRateRecord.BPM_MIN, HeartRateRecord.BPM_MAX),
+                timeRangeFilter = TimeRangeFilter.between(startTime, endTime)
+            )
+        )
+        return Pair(response[HeartRateRecord.BPM_MIN], response[HeartRateRecord.BPM_MAX])
+    }
+
     override suspend fun getAverageOxygenSaturation(startTime: Instant, endTime: Instant): Double? {
-        // OxygenSaturationRecord does not support statistical aggregation directly in current Health Connect version.
-        // We calculate it manually from raw records.
         val records = getOxygenSaturationData(startTime, endTime)
         if (records.isEmpty()) return null
         
         return records.map { it.percentage.value }.average()
+    }
+
+    override suspend fun getMinMaxOxygenSaturation(startTime: Instant, endTime: Instant): Pair<Double?, Double?> {
+        val records = getOxygenSaturationData(startTime, endTime)
+        if (records.isEmpty()) return Pair(null, null)
+        
+        val percentages = records.map { it.percentage.value }
+        return Pair(percentages.minOrNull(), percentages.maxOrNull())
+    }
+
+    override suspend fun getYearlyHeartRateStats(): List<MonthlyStats> {
+        val now = Instant.now()
+        val stats = mutableListOf<MonthlyStats>()
+        val zoneId = ZoneId.systemDefault()
+        
+        for (i in 11 downTo 0) {
+            val monthStart = now.atZone(zoneId).minusMonths(i.toLong()).withDayOfMonth(1).toInstant()
+            val monthEnd = now.atZone(zoneId).minusMonths(i.toLong()).withDayOfMonth(now.atZone(zoneId).minusMonths(i.toLong()).toLocalDate().lengthOfMonth()).toInstant()
+            
+            val avg = getAverageHeartRate(monthStart, monthEnd)
+            val (min, max) = getMinMaxHeartRate(monthStart, monthEnd)
+            
+            val monthName = monthStart.atZone(zoneId).month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
+            stats.add(MonthlyStats(monthName, avg?.toDouble(), min?.toDouble(), max?.toDouble()))
+        }
+        return stats
+    }
+
+    override suspend fun getYearlyOxygenStats(): List<MonthlyStats> {
+        val now = Instant.now()
+        val stats = mutableListOf<MonthlyStats>()
+        val zoneId = ZoneId.systemDefault()
+        
+        for (i in 11 downTo 0) {
+            val monthStart = now.atZone(zoneId).minusMonths(i.toLong()).withDayOfMonth(1).toInstant()
+            val monthEnd = now.atZone(zoneId).minusMonths(i.toLong()).withDayOfMonth(now.atZone(zoneId).minusMonths(i.toLong()).toLocalDate().lengthOfMonth()).toInstant()
+            
+            val avg = getAverageOxygenSaturation(monthStart, monthEnd)
+            val (min, max) = getMinMaxOxygenSaturation(monthStart, monthEnd)
+            
+            val monthName = monthStart.atZone(zoneId).month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
+            stats.add(MonthlyStats(monthName, avg, min, max))
+        }
+        return stats
     }
 }
