@@ -64,6 +64,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.health.connect.client.HealthConnectClient
@@ -85,6 +88,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     private lateinit var spirometerManager: SpirometerManager
@@ -134,7 +139,8 @@ fun BreathBeatApp(
                     icon = {
                         Icon(
                             painterResource(it.icon),
-                            contentDescription = it.label
+                            contentDescription = it.label,
+                            modifier = Modifier.size(24.dp)
                         )
                     },
                     label = { Text(it.label) },
@@ -156,7 +162,7 @@ fun BreathBeatApp(
                         dataSaved = measuringDataSaved,
                         onDataSavedChange = { measuringDataSaved = it }
                     )
-                    AppDestinations.PROFILE -> Greeting(name = "Profile")
+                    AppDestinations.MY_PLAN -> MyPlanScreen(healthManager, lungCapacityRepository)
                     AppDestinations.HISTORY -> HistoryScreen(lungCapacityRepository) {
                         currentDestination = AppDestinations.HOME
                     }
@@ -254,7 +260,7 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         HealthMetricCard(
-            title = "Lung Capacity",
+            title = "Vital Capacity",
             unit = "ml",
             avgValue = avgLung?.let { "%.0f".format(it) } ?: "--",
             minValue = minLung?.let { "%.0f".format(it) } ?: "--",
@@ -285,7 +291,7 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.height(16.dp))
                 
                 HealthMetricCard(
-                    title = "Blood Oxygen",
+                    title = "SpO2",
                     unit = "%",
                     avgValue = avgOxygen?.let { "%.1f".format(it) } ?: "--",
                     minValue = minOxygen?.let { "%.1f".format(it) } ?: "--",
@@ -303,7 +309,7 @@ fun HomeScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         MonthlyLineChart(
-            title = "Lung Capacity Trends (Yearly)",
+            title = "Vital Capacity Trends (Yearly)",
             stats = yearlyLungStats,
             color = Color(0xFF4CAF50),
             unit = "ml"
@@ -321,7 +327,7 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             MonthlyLineChart(
-                title = "Blood Oxygen Trends (Yearly)",
+                title = "SpO2 Trends (Yearly)",
                 stats = yearlyOxygenStats,
                 color = MaterialTheme.colorScheme.secondary,
                 unit = "%"
@@ -393,7 +399,7 @@ fun HistoryScreen(lungCapacityRepository: LungCapacityRepository, onBack: () -> 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Lung Capacity History") },
+                title = { Text("Vital Capacity History") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -613,8 +619,8 @@ fun MeasuringScreen(
                 Text("Authorize Bluetooth")
             }
         } else {
-            // Lung Capacity Section
-            Text(text = "Lung Capacity", style = MaterialTheme.typography.titleMedium)
+            // Vital Capacity Section
+            Text(text = "Vital Capacity", style = MaterialTheme.typography.titleMedium)
             Text(text = "$volumeML", style = MaterialTheme.typography.displayLarge)
             Text(text = "ml", style = MaterialTheme.typography.headlineMedium)
             Text(text = "Status: ${connectionState.name}", style = MaterialTheme.typography.bodySmall)
@@ -669,6 +675,158 @@ fun MeasuringScreen(
     }
 }
 
+@Composable
+fun MyPlanScreen(healthManager: HealthManager, lungCapacityRepository: LungCapacityRepository) {
+    var avgHR by remember { mutableStateOf<Long?>(null) }
+    var avgSpO2 by remember { mutableStateOf<Double?>(null) }
+    var avgVC by remember { mutableStateOf<Double?>(null) }
+    
+    val textMeasurer = rememberTextMeasurer()
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+    val labelStyle = MaterialTheme.typography.labelSmall.copy(color = onSurfaceColor)
+    val scoreStyle = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, color = onSurfaceColor)
+
+    // Baseline logic (using 1 week averages for now as placeholder for baseline)
+    val baselineHR = 70.0
+    val baselineSpO2 = 98.0
+    val baselineVC = 3500.0
+
+    LaunchedEffect(Unit) {
+        val endTime = Instant.now()
+        val startTime = endTime.minus(7, ChronoUnit.DAYS)
+        avgHR = healthManager.getAverageHeartRate(startTime, endTime)
+        avgSpO2 = healthManager.getAverageOxygenSaturation(startTime, endTime)
+        avgVC = lungCapacityRepository.getAverageLungCapacity(startTime.toEpochMilli(), endTime.toEpochMilli())
+    }
+
+    val hrScore = avgHR?.let { 100 - ((it - baselineHR) / baselineHR * 100).coerceIn(0.0, 100.0) } ?: 0.0
+    val spo2Score = avgSpO2?.let { if (it < 92) (it/92*40) else if (it < 94) 40 + (it-92)/2*30 else 70 + (it-94)/6*30 }.let { it?.coerceIn(0.0, 100.0) } ?: 0.0
+    val vcScore = avgVC?.let { (it / baselineVC * 100).coerceIn(0.0, 100.0) } ?: 0.0
+
+    val readinessScore = (spo2Score * 0.4 + hrScore * 0.35 + vcScore * 0.25)
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("My Training Plan", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Box(modifier = Modifier.size(280.dp)) {
+            RadarChart(
+                scores = listOf(spo2Score, hrScore, vcScore),
+                labels = listOf("SpO2", "Heart Rate", "Vital Capacity"),
+                color = MaterialTheme.colorScheme.primary,
+                textMeasurer = textMeasurer,
+                labelStyle = labelStyle,
+                scoreStyle = scoreStyle
+            )
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Body Readiness Score: ${readinessScore.toInt()}", style = MaterialTheme.typography.titleLarge)
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                val recommendation = when {
+                    readinessScore >= 90 -> "Option A: High-Intensity Breakthrough\nFocus: VO2max challenges, HIIT, heavy lifting."
+                    readinessScore >= 70 -> "Option B: Routine Endurance/Strength\nFocus: Zone 2 - Zone 3 aerobic training, moderate circuit training."
+                    readinessScore >= 40 -> "Option C: Active Recovery\nFocus: Yoga, walking, Breathing Exercises (VC restoration)."
+                    else -> "Option D: Mandatory Care\nAction: Stop training. Focus on meditation, hydration, and medical observation."
+                }
+                
+                Text(recommendation, style = MaterialTheme.typography.bodyLarge)
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Text("Physiological Status Guide", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Your training plan is dynamically adjusted based on the integration of SpO2 (40%), Heart Rate (35%), and Vital Capacity (25%). \n\n" +
+                   "• Optimal: suitable for challenges.\n" +
+                   "• Fatigue: stay with low-to-moderate loads.\n" +
+                   "• Stress: focus on recovery and sleep.\n" +
+                   "• Warning: absolute rest required.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+fun RadarChart(
+    scores: List<Double>, 
+    labels: List<String>, 
+    color: Color,
+    textMeasurer: androidx.compose.ui.text.TextMeasurer,
+    labelStyle: androidx.compose.ui.text.TextStyle,
+    scoreStyle: androidx.compose.ui.text.TextStyle
+) {
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val centerX = size.width / 2
+        val centerY = size.height / 2
+        val radius = size.minDimension / 2 * 0.7f // Adjusted to fit labels
+        val numAxes = scores.size
+        val angleStep = 2 * Math.PI / numAxes
+
+        // Draw grid lines
+        for (i in 1..4) {
+            val r = radius * i / 4
+            val path = Path()
+            for (j in 0 until numAxes) {
+                val angle = j * angleStep - Math.PI / 2
+                val x = centerX + r * cos(angle).toFloat()
+                val y = centerY + r * sin(angle).toFloat()
+                if (j == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close()
+            drawPath(path, Color.Gray.copy(alpha = 0.3f), style = Stroke(width = 1.dp.toPx()))
+        }
+
+        // Draw axis lines and marks
+        for (i in 0 until numAxes) {
+            val angle = i * angleStep - Math.PI / 2
+            val x = centerX + radius * cos(angle).toFloat()
+            val y = centerY + radius * sin(angle).toFloat()
+            drawLine(Color.Gray.copy(alpha = 0.3f), Offset(centerX, centerY), Offset(x, y), strokeWidth = 1.dp.toPx())
+
+            // Labels at the ends of axes
+            val label = labels[i]
+            val labelLayout = textMeasurer.measure(label, labelStyle)
+            val labelRadius = radius + 20.dp.toPx()
+            val lx = centerX + labelRadius * cos(angle).toFloat() - labelLayout.size.width / 2
+            val ly = centerY + labelRadius * sin(angle).toFloat() - labelLayout.size.height / 2
+            drawText(labelLayout, topLeft = Offset(lx, ly))
+        }
+
+        // Draw data area and points
+        val dataPath = Path()
+        for (i in 0 until numAxes) {
+            val angle = i * angleStep - Math.PI / 2
+            val r = radius * (scores[i] / 100).toFloat()
+            val x = centerX + r * cos(angle).toFloat()
+            val y = centerY + r * sin(angle).toFloat()
+            
+            if (i == 0) dataPath.moveTo(x, y) else dataPath.lineTo(x, y)
+            drawCircle(color, 4.dp.toPx(), Offset(x, y))
+
+            // Score numerical mark next to the point
+            val scoreText = scores[i].toInt().toString()
+            val scoreLayout = textMeasurer.measure(scoreText, scoreStyle)
+            val sx = x + 12.dp.toPx() * cos(angle).toFloat() - scoreLayout.size.width / 2
+            val sy = y + 12.dp.toPx() * sin(angle).toFloat() - scoreLayout.size.height / 2
+            drawText(scoreLayout, topLeft = Offset(sx, sy))
+        }
+        dataPath.close()
+        drawPath(dataPath, color.copy(alpha = 0.3f))
+        drawPath(dataPath, color, style = Stroke(width = 2.dp.toPx()))
+    }
+}
+
 @SuppressLint("MissingPermission")
 @Composable
 fun DeviceItem(device: BluetoothDevice, onClick: () -> Unit) {
@@ -682,8 +840,8 @@ fun DeviceItem(device: BluetoothDevice, onClick: () -> Unit) {
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            @Suppress("DEPRECATION")
             Column {
-                @Suppress("DEPRECATION")
                 Text(text = device.name ?: "Unknown", style = MaterialTheme.typography.bodyLarge)
                 Text(text = device.address, style = MaterialTheme.typography.bodySmall)
             }
@@ -717,7 +875,7 @@ enum class AppDestinations(
 ) {
     HOME("Home", R.drawable.ic_home),
     MEASURING("Measuring", R.drawable.ic_favorite),
-    PROFILE("Profile", R.drawable.ic_account_box),
+    MY_PLAN("My Plan", R.drawable.ic_account_box),
     HISTORY("History", R.drawable.ic_home) // Navigation to this is handled via click
 }
 
