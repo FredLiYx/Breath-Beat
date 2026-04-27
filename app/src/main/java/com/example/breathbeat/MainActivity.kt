@@ -45,6 +45,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,17 +62,22 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import com.example.breathbeat.bluetooth.BluetoothConnectionManagerImpl
 import com.example.breathbeat.bluetooth.BluetoothConnectionState
+import com.example.breathbeat.database.AppDatabase
+import com.example.breathbeat.database.LungCapacityRepository
+import com.example.breathbeat.database.LungCapacityRepositoryImpl
 import com.example.breathbeat.health.HealthManager
 import com.example.breathbeat.health.HealthManagerImpl
 import com.example.breathbeat.health.MonthlyStats
 import com.example.breathbeat.spirometer.SpirometerManager
 import com.example.breathbeat.ui.theme.BreathBeatTheme
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 
 class MainActivity : ComponentActivity() {
     private lateinit var spirometerManager: SpirometerManager
     private lateinit var healthManager: HealthManager
+    private lateinit var lungCapacityRepository: LungCapacityRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,18 +85,25 @@ class MainActivity : ComponentActivity() {
         val bluetoothConnectionManager = BluetoothConnectionManagerImpl(applicationContext)
         spirometerManager = SpirometerManager(bluetoothConnectionManager)
         healthManager = HealthManagerImpl(applicationContext)
+        
+        val database = AppDatabase.getDatabase(applicationContext)
+        lungCapacityRepository = LungCapacityRepositoryImpl(database.lungCapacityDao())
 
         enableEdgeToEdge()
         setContent {
             BreathBeatTheme {
-                BreathBeatApp(spirometerManager, healthManager)
+                BreathBeatApp(spirometerManager, healthManager, lungCapacityRepository)
             }
         }
     }
 }
 
 @Composable
-fun BreathBeatApp(spirometerManager: SpirometerManager, healthManager: HealthManager) {
+fun BreathBeatApp(
+    spirometerManager: SpirometerManager, 
+    healthManager: HealthManager,
+    lungCapacityRepository: LungCapacityRepository
+) {
     var currentDestination by rememberSaveable { mutableStateOf(AppDestinations.HOME) }
 
     NavigationSuiteScaffold(
@@ -113,8 +126,8 @@ fun BreathBeatApp(spirometerManager: SpirometerManager, healthManager: HealthMan
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
             Column(modifier = Modifier.padding(innerPadding)) {
                 when (currentDestination) {
-                    AppDestinations.HOME -> HomeScreen(healthManager)
-                    AppDestinations.MEASURING -> MeasuringScreen(spirometerManager)
+                    AppDestinations.HOME -> HomeScreen(healthManager, lungCapacityRepository)
+                    AppDestinations.MEASURING -> MeasuringScreen(spirometerManager, lungCapacityRepository)
                     AppDestinations.PROFILE -> Greeting(name = "Profile")
                 }
             }
@@ -123,7 +136,7 @@ fun BreathBeatApp(spirometerManager: SpirometerManager, healthManager: HealthMan
 }
 
 @Composable
-fun HomeScreen(healthManager: HealthManager) {
+fun HomeScreen(healthManager: HealthManager, lungCapacityRepository: LungCapacityRepository) {
     val context = LocalContext.current
     var avgHeartRate by remember { mutableStateOf<Long?>(null) }
     var minHeartRate by remember { mutableStateOf<Long?>(null) }
@@ -133,8 +146,13 @@ fun HomeScreen(healthManager: HealthManager) {
     var minOxygen by remember { mutableStateOf<Double?>(null) }
     var maxOxygen by remember { mutableStateOf<Double?>(null) }
 
+    var avgLung by remember { mutableStateOf<Double?>(null) }
+    var minLung by remember { mutableStateOf<Double?>(null) }
+    var maxLung by remember { mutableStateOf<Double?>(null) }
+
     var yearlyHeartRateStats by remember { mutableStateOf<List<MonthlyStats>>(emptyList()) }
     var yearlyOxygenStats by remember { mutableStateOf<List<MonthlyStats>>(emptyList()) }
+    var yearlyLungStats by remember { mutableStateOf<List<MonthlyStats>>(emptyList()) }
 
     var hasHealthPermissions by remember { mutableStateOf(false) }
     var healthAvailability by remember { mutableStateOf(HealthConnectClient.SDK_UNAVAILABLE) }
@@ -149,6 +167,19 @@ fun HomeScreen(healthManager: HealthManager) {
         healthAvailability = HealthConnectClient.getSdkStatus(context)
         if (healthAvailability == HealthConnectClient.SDK_AVAILABLE) {
             hasHealthPermissions = healthManager.hasAllPermissions()
+        }
+        
+        // Fetch Lung Capacity data regardless of Health Connect permissions
+        try {
+            val endTime = Instant.now().toEpochMilli()
+            val startTime = Instant.now().minus(7, ChronoUnit.DAYS).toEpochMilli()
+            avgLung = lungCapacityRepository.getAverageLungCapacity(startTime, endTime)
+            val (minL, maxL) = lungCapacityRepository.getMinMaxLungCapacity(startTime, endTime)
+            minLung = minL
+            maxLung = maxL
+            yearlyLungStats = lungCapacityRepository.getYearlyLungStats()
+        } catch (e: Exception) {
+            Log.e("BreathBeat", "Error fetching lung data", e)
         }
     }
 
@@ -185,6 +216,21 @@ fun HomeScreen(healthManager: HealthManager) {
         Text(text = "Health Overview", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
 
+        Text(text = "Past Week Summary", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Lung Capacity Section (Local Database)
+        HealthMetricCard(
+            title = "Lung Capacity",
+            unit = "ml",
+            avgValue = avgLung?.let { "%.0f".format(it) } ?: "--",
+            minValue = minLung?.let { "%.0f".format(it) } ?: "--",
+            maxValue = maxLung?.let { "%.0f".format(it) } ?: "--",
+            color = Color(0xFF4CAF50) // Green
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         if (healthAvailability == HealthConnectClient.SDK_AVAILABLE) {
             if (!hasHealthPermissions) {
                 Button(onClick = {
@@ -193,9 +239,6 @@ fun HomeScreen(healthManager: HealthManager) {
                     Text("Authorize Health Connect")
                 }
             } else {
-                Text(text = "Past Week Summary", style = MaterialTheme.typography.titleMedium)
-                Spacer(modifier = Modifier.height(16.dp))
-
                 HealthMetricCard(
                     title = "Heart Rate",
                     unit = "BPM",
@@ -215,32 +258,42 @@ fun HomeScreen(healthManager: HealthManager) {
                     maxValue = maxOxygen?.let { "%.1f".format(it) } ?: "--",
                     color = MaterialTheme.colorScheme.secondary
                 )
-
-                Spacer(modifier = Modifier.height(32.dp))
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(24.dp))
-                
-                Text(text = "Yearly Trends", style = MaterialTheme.typography.titleMedium)
-                Spacer(modifier = Modifier.height(16.dp))
-
-                MonthlyLineChart(
-                    title = "Heart Rate Trends (Yearly)",
-                    stats = yearlyHeartRateStats,
-                    color = MaterialTheme.colorScheme.primary,
-                    unit = "BPM"
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                MonthlyLineChart(
-                    title = "Blood Oxygen Trends (Yearly)",
-                    stats = yearlyOxygenStats,
-                    color = MaterialTheme.colorScheme.secondary,
-                    unit = "%"
-                )
             }
         } else {
             Text("Health Connect is unavailable.")
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        HorizontalDivider()
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Text(text = "Yearly Trends", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(16.dp))
+
+        MonthlyLineChart(
+            title = "Lung Capacity Trends (Yearly)",
+            stats = yearlyLungStats,
+            color = Color(0xFF4CAF50),
+            unit = "ml"
+        )
+
+        if (hasHealthPermissions) {
+            Spacer(modifier = Modifier.height(16.dp))
+            MonthlyLineChart(
+                title = "Heart Rate Trends (Yearly)",
+                stats = yearlyHeartRateStats,
+                color = MaterialTheme.colorScheme.primary,
+                unit = "BPM"
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            MonthlyLineChart(
+                title = "Blood Oxygen Trends (Yearly)",
+                stats = yearlyOxygenStats,
+                color = MaterialTheme.colorScheme.secondary,
+                unit = "%"
+            )
         }
     }
 }
@@ -328,11 +381,11 @@ fun MonthlyLineChart(
                 )
             }
 
-            if (stats.isNotEmpty()) {
+            if (stats.isNotEmpty() && stats.any { it.avg != null || it.min != null || it.max != null }) {
                 val allValues = stats.flatMap { listOfNotNull(it.avg, it.min, it.max) }
                 val minY = (allValues.minOrNull() ?: 0.0) * 0.9
                 val maxY = (allValues.maxOrNull() ?: 100.0) * 1.1
-                val rangeY = maxY - minY
+                val rangeY = if (maxY - minY == 0.0) 1.0 else maxY - minY
 
                 Box(modifier = Modifier.height(150.dp).fillMaxWidth().padding(top = 16.dp)) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -403,12 +456,14 @@ private fun drawLineSeries(
 
 @SuppressLint("MissingPermission")
 @Composable
-fun MeasuringScreen(spirometerManager: SpirometerManager) {
+fun MeasuringScreen(spirometerManager: SpirometerManager, lungCapacityRepository: LungCapacityRepository) {
     val context = LocalContext.current
     val connectionState by spirometerManager.bluetoothConnectionManager.connectionState.collectAsState()
     val volumeML by spirometerManager.volumeML.collectAsState()
+    val isBlowing by spirometerManager.isBlowing.collectAsState()
     val scannedDevices by spirometerManager.bluetoothConnectionManager.scannedDevices.collectAsState()
-
+    
+    val scope = rememberCoroutineScope()
     var hasBtPermissions by remember { mutableStateOf(checkBluetoothPermissions(context)) }
 
     val btPermissionLauncher = rememberLauncherForActivityResult(
@@ -439,7 +494,22 @@ fun MeasuringScreen(spirometerManager: SpirometerManager) {
             Text(text = "ml", style = MaterialTheme.typography.headlineMedium)
             Text(text = "Status: ${connectionState.name}", style = MaterialTheme.typography.bodySmall)
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+            
+            // Save Data Button - Active only when user stopped blowing and there is data
+            Button(
+                onClick = { 
+                    scope.launch {
+                        lungCapacityRepository.insertRecord(volumeML)
+                        Log.d("MeasuringScreen", "Saved volume: $volumeML")
+                    }
+                },
+                enabled = !isBlowing && volumeML > 0
+            ) {
+                Text("Save Data")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
             if (connectionState == BluetoothConnectionState.DISCONNECTED) {
                 Button(onClick = { 
                     Log.d("BreathBeat", "Starting discovery")

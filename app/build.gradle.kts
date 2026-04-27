@@ -7,12 +7,12 @@ plugins {
 
 android {
     namespace = "com.example.breathbeat"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.example.breathbeat"
         minSdk = 28
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
@@ -58,8 +58,8 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     
-    // Health Connect
-    implementation("androidx.health.connect:connect-client:1.2.0-alpha04")
+    // Health Connect - Using 1.1.0 to avoid AGP 9.1.0 and SDK 37 requirements
+    implementation("androidx.health.connect:connect-client:1.1.0")
 
     // Room
     implementation(libs.androidx.room.runtime)
