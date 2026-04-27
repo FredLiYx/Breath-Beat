@@ -25,6 +25,10 @@ class LungCapacityRepositoryImpl(
         lungCapacityDao.insertRecord(record)
     }
 
+    override suspend fun deleteRecord(record: LungCapacityRecord) {
+        lungCapacityDao.deleteRecord(record)
+    }
+
     override suspend fun deleteAll() {
         lungCapacityDao.deleteAll()
     }
@@ -53,7 +57,7 @@ class LungCapacityRepositoryImpl(
             val monthEnd = dateTime.withDayOfMonth(dateTime.toLocalDate().lengthOfMonth()).with(LocalTime.MAX).toInstant().toEpochMilli()
             
             val records = lungCapacityDao.getRecordsInRange(monthStart, monthEnd).first()
-            val monthName = Instant.ofEpochMilli(monthStart).atZone(zoneId).month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
+            val monthName = dateTime.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())
             
             if (records.isEmpty()) {
                 stats.add(MonthlyStats(monthName, null, null, null))

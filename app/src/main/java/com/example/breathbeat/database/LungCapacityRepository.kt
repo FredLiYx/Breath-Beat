@@ -7,6 +7,7 @@ interface LungCapacityRepository {
     fun getAllRecords(): Flow<List<LungCapacityRecord>>
     fun getRecordsInRange(startTime: Long, endTime: Long): Flow<List<LungCapacityRecord>>
     suspend fun insertRecord(volumeML: Int, timestamp: Long = System.currentTimeMillis())
+    suspend fun deleteRecord(record: LungCapacityRecord)
     suspend fun deleteAll()
 
     suspend fun getAverageLungCapacity(startTime: Long, endTime: Long): Double?

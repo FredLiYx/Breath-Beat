@@ -1,6 +1,7 @@
 package com.example.breathbeat.database
 
 import androidx.room.Dao
+import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
@@ -16,6 +17,9 @@ interface LungCapacityDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertRecord(record: LungCapacityRecord)
+
+    @Delete
+    suspend fun deleteRecord(record: LungCapacityRecord)
 
     @Query("DELETE FROM lung_capacity_records")
     suspend fun deleteAll()

@@ -30,14 +30,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +71,7 @@ import androidx.health.connect.client.PermissionController
 import com.example.breathbeat.bluetooth.BluetoothConnectionManagerImpl
 import com.example.breathbeat.bluetooth.BluetoothConnectionState
 import com.example.breathbeat.database.AppDatabase
+import com.example.breathbeat.database.LungCapacityRecord
 import com.example.breathbeat.database.LungCapacityRepository
 import com.example.breathbeat.database.LungCapacityRepositoryImpl
 import com.example.breathbeat.health.HealthManager
@@ -72,7 +81,10 @@ import com.example.breathbeat.spirometer.SpirometerManager
 import com.example.breathbeat.ui.theme.BreathBeatTheme
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private lateinit var spirometerManager: SpirometerManager
@@ -108,7 +120,7 @@ fun BreathBeatApp(
 
     NavigationSuiteScaffold(
         navigationSuiteItems = {
-            AppDestinations.entries.forEach {
+            AppDestinations.entries.filter { it != AppDestinations.HISTORY }.forEach {
                 item(
                     icon = {
                         Icon(
@@ -126,9 +138,14 @@ fun BreathBeatApp(
         Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
             Column(modifier = Modifier.padding(innerPadding)) {
                 when (currentDestination) {
-                    AppDestinations.HOME -> HomeScreen(healthManager, lungCapacityRepository)
+                    AppDestinations.HOME -> HomeScreen(healthManager, lungCapacityRepository) {
+                        currentDestination = AppDestinations.HISTORY
+                    }
                     AppDestinations.MEASURING -> MeasuringScreen(spirometerManager, lungCapacityRepository)
                     AppDestinations.PROFILE -> Greeting(name = "Profile")
+                    AppDestinations.HISTORY -> HistoryScreen(lungCapacityRepository) {
+                        currentDestination = AppDestinations.HOME
+                    }
                 }
             }
         }
@@ -136,7 +153,11 @@ fun BreathBeatApp(
 }
 
 @Composable
-fun HomeScreen(healthManager: HealthManager, lungCapacityRepository: LungCapacityRepository) {
+fun HomeScreen(
+    healthManager: HealthManager, 
+    lungCapacityRepository: LungCapacityRepository,
+    onLungCapacityClick: () -> Unit
+) {
     val context = LocalContext.current
     var avgHeartRate by remember { mutableStateOf<Long?>(null) }
     var minHeartRate by remember { mutableStateOf<Long?>(null) }
@@ -169,7 +190,6 @@ fun HomeScreen(healthManager: HealthManager, lungCapacityRepository: LungCapacit
             hasHealthPermissions = healthManager.hasAllPermissions()
         }
         
-        // Fetch Lung Capacity data regardless of Health Connect permissions
         try {
             val endTime = Instant.now().toEpochMilli()
             val startTime = Instant.now().minus(7, ChronoUnit.DAYS).toEpochMilli()
@@ -219,14 +239,14 @@ fun HomeScreen(healthManager: HealthManager, lungCapacityRepository: LungCapacit
         Text(text = "Past Week Summary", style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Lung Capacity Section (Local Database)
         HealthMetricCard(
             title = "Lung Capacity",
             unit = "ml",
             avgValue = avgLung?.let { "%.0f".format(it) } ?: "--",
             minValue = minLung?.let { "%.0f".format(it) } ?: "--",
             maxValue = maxLung?.let { "%.0f".format(it) } ?: "--",
-            color = Color(0xFF4CAF50) // Green
+            color = Color(0xFF4CAF50),
+            onClick = onLungCapacityClick
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -259,8 +279,6 @@ fun HomeScreen(healthManager: HealthManager, lungCapacityRepository: LungCapacit
                     color = MaterialTheme.colorScheme.secondary
                 )
             }
-        } else {
-            Text("Health Connect is unavailable.")
         }
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -305,10 +323,13 @@ fun HealthMetricCard(
     avgValue: String,
     minValue: String,
     maxValue: String,
-    color: Color
+    color: Color,
+    onClick: (() -> Unit)? = null
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(text = title, style = MaterialTheme.typography.titleSmall)
@@ -338,6 +359,91 @@ fun HealthMetricCard(
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(text = "Max", style = MaterialTheme.typography.labelSmall)
                         Text(text = maxValue, style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HistoryScreen(lungCapacityRepository: LungCapacityRepository, onBack: () -> Unit) {
+    val records by lungCapacityRepository.getAllRecords().collectAsState(initial = emptyList())
+    val scope = rememberCoroutineScope()
+    
+    val groupedRecords = records.groupBy { record ->
+        Instant.ofEpochMilli(record.timestamp).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault()))
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Lung Capacity History") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            )
+        }
+    ) { innerPadding ->
+        Column(modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 16.dp)) {
+            if (records.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No records found")
+                }
+            } else {
+                LazyColumn {
+                    groupedRecords.forEach { (month, monthRecords) ->
+                        item {
+                            var expanded by remember { mutableStateOf(false) }
+                            Card(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { expanded = !expanded }
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(text = month, style = MaterialTheme.typography.titleMedium)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(text = "${monthRecords.size} records", style = MaterialTheme.typography.bodySmall)
+                                            Icon(
+                                                imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                contentDescription = null
+                                            )
+                                        }
+                                    }
+                                    
+                                    if (expanded) {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        monthRecords.forEach { record ->
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column {
+                                                    Text(text = "${record.volumeML} ml", style = MaterialTheme.typography.bodyLarge)
+                                                    Text(
+                                                        text = Instant.ofEpochMilli(record.timestamp).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("dd MMM, HH:mm")),
+                                                        style = MaterialTheme.typography.labelSmall
+                                                    )
+                                                }
+                                                IconButton(onClick = {
+                                                    scope.launch { lungCapacityRepository.deleteRecord(record) }
+                                                }) {
+                                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red)
+                                                }
+                                            }
+                                            HorizontalDivider()
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -588,6 +694,7 @@ enum class AppDestinations(
     HOME("Home", R.drawable.ic_home),
     MEASURING("Measuring", R.drawable.ic_favorite),
     PROFILE("Profile", R.drawable.ic_account_box),
+    HISTORY("History", R.drawable.ic_home) // Navigation to this is handled via click
 }
 
 @Composable
